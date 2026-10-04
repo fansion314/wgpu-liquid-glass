@@ -1,0 +1,23 @@
+[package]
+name = "hello-wgpu"
+version = "0.1.0"
+edition = "2024"
+description = "Interactive screen-space glass refraction with wgpu"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+egui-winit = "0.36.2"
+env_logger = "0.11"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
+log = "0.4"
+pollster = "1.0.1"
+rfd = "0.17.2"
+wgpu = "30.0.1"
+winit = "0.30.13"
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }

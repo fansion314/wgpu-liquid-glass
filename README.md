@@ -1,0 +1,122 @@
+# 玻璃实验室 · hello-wgpu
+
+Rust 原生窗口里的二维玻璃折射演示。使用 **winit + wgpu + WGSL** 管理窗口与渲染，**egui** 绘制中文控件、文字、高分辨率图片和形状，字体采用**霞鹜文楷**。
+
+## 启动
+
+安装稳定版 Rust 后，在项目目录执行：
+
+```sh
+cargo run --locked
+```
+
+默认窗口为 1280 × 800 个逻辑像素，默认显示真实摄影，模糊半径为 0。三张内置图片、字体和 shader 全部内嵌，程序启动后无需联网，也不依赖当前工作目录。支持 wgpu 原生桌面后端；本项目实际验收使用 macOS / Apple M3 / Metal，Windows 尚未在真实系统中验收。Linux 测试环境为远端原生 x86_64 Arch 容器。
+
+项目使用 Rust 2024。Cargo.lock 已纳入项目，主要依赖为 wgpu 30.0.1、winit 0.30.13、egui 系列 0.36.2。保留用户的 Cargo/sccache 配置，不在项目中覆盖 wrapper。
+
+## 在 Mac 上交叉编译 Windows / Linux
+
+使用 Zig 和 cargo-zigbuild；Windows 保持 GNU/MinGW，Linux 使用 GNU/glibc：
+
+```sh
+rustup target add x86_64-pc-windows-gnu x86_64-unknown-linux-gnu
+cargo install --locked cargo-zigbuild
+# 系统已有 Zig 时无需重新安装
+brew install zig
+
+rtk proxy ./scripts/build-cross.sh windows
+rtk proxy ./scripts/build-cross.sh linux
+# 或一次构建两者
+rtk proxy ./scripts/build-cross.sh all
+```
+
+脚本保持默认 sccache wrapper，并通过 `rustup which rustc` 取得实际编译器路径，避免 wrapper 经 rustup shim 启动时的权限问题。不会覆盖用户设置的 RUSTC。
+
+Windows 产物位于 `target/x86_64-pc-windows-gnu/release/hello-wgpu.exe`；release 使用 GUI 子系统，启动不会创建黑色终端窗口，debug 保留控制台。Linux 使用 `x86_64-unknown-linux-gnu.2.28` 请求 glibc 2.28 基线，产物目录仍为 `target/x86_64-unknown-linux-gnu/release/`。实际系统还需兼容图形驱动和 X11/Wayland 环境。
+
+每次构建自动更新 `outputs/hello-wgpu-windows-x86_64.zip` 或 `outputs/hello-wgpu-linux-x86_64.tar.gz`，附带说明和许可证。图片、字体、shader 内嵌，不需外置资源文件。Linux 在运行时从系统加载 Wayland/X11、xkbcommon、Vulkan/OpenGL 库；打开文件选择器还需桌面 portal。图形库和驱动由发行版提供，不随程序打包。
+
+不使用静态 musl 作为通用桌面版本：普通静态 musl 中的 `dlopen` 不支持加载共享图形库。动态 musl 需要 musl sysroot 和匹配的运行时图形库，不能直接替代 Arch/Ubuntu/Fedora 的 glibc 版本。参见 [musl dlopen 实现](https://git.musl-libc.org/cgit/musl/tree/src/ldso/dlopen.c) 与 [cargo-zigbuild 说明](https://github.com/rust-cross/cargo-zigbuild)。
+
+## 操作与参数
+
+在左侧玻璃内部按住鼠标左键拖动。透明圆角不参与命中。玻璃可越过背景区域的四条边界，越界部分不显示；折射与模糊的越界采样为黑色，参数面板不会混入采样。面板顶部可切换 2048 × 858 的虚拟场景、6000 × 4000 的真实摄影，以及用户提供的 1080 × 1920 第三张照片。
+
+点击“打开图片…”调用系统文件选择器，支持 JPEG、PNG、WebP、BMP。成功后自动显示“用户图片”，可与内置图片来回切换；再次打开会替换先前的用户图片。取消选择或加载失败保留当前背景，失败原因显示在面板中。超过 GPU 纹理尺寸限制的本地图片会等比缩小，并显示原始尺寸；图片绘制到固定 3:2 比例、在可用区域内最大化的画布，标签位于画布上方，不覆盖图像。
+
+三张内置图片和字体直接编进单一 EXE，只复制 EXE 就可运行，不需同目录资源文件、Rust 或 Zig；仍需要 Windows 自带的系统库与兼容的图形驱动。按钮选择的图片仅在运行时读入，不会写回 EXE；下次启动恢复默认内置摄影。
+
+选择“图片操作”可直接拖动图片，或在任意模式下按住 Shift 拖动。图片上滚轮以鼠标为中心缩放；面板提供合适大小、填充、缩放滑块、放大/缩小与重置。图片始终保持比例，超出固定画布的部分裁切；切换图片时重置缩放与位移。画布周围有同心圆、三角形、六边形、菱形、棋盘格、条纹和文字等测试图形。它们使用互不重叠的布局单元；窄窗口自动将右侧图形移至底部。
+
+右侧滑块实时更新效果；数值也可以直接编辑。调整窗口大小保留玻璃尺寸与位置，超出区域自动裁切，重置按钮恢复初始尺寸、模式、位置与全部玻璃参数（含模糊 0）。面板可纵向滚动，宽度随可用空间调整。字体已增大，界面缩放自动叠加系统 DPI；面板提供 0.75–2 倍可调缩放（macOS/Linux 默认 1.1 倍，Windows 默认 1.25 倍），与图片缩放独立。拖动界面缩放滑块只修改待应用值，点击“应用缩放”才改变布局；“恢复默认”也需点击应用。
+
+| 参数 | 含义 | 初始值 |
+| --- | --- | --- |
+| 模式 | 液态玻璃、轴对称凸透镜、轴对称凹透镜 | 液态玻璃 |
+| 形状 | 圆角矩形或圆形孔径，独立于曲面模型 | 圆角矩形 |
+| 基础厚度 | 最薄处到平背面的距离，范围 0–120 | 16 |
+| 打磨宽度 | 沿实际轮廓向内的等距宽度，随圆角轮廓变化 | 32 |
+| 模糊类型 | 两遍高斯模糊或微法线散射毛玻璃 | 高斯 |
+| 表面粗糙度 | 毛玻璃前后界面的微法线分布宽度，范围 0–0.5 | 0.15 |
+| 曲率 | 控制表面高度和法线变化，范围 0–1 | 0.6 |
+| 背景距离 | 玻璃到背景平面的距离，范围 0–300；越大位移越明显 | 100 |
+| 模糊半径 | 高斯核支撑半径，范围 0–24；标准差约为半径 / 3 | 0 |
+| 折射率 | 空气折射率为 1，玻璃范围 1–2 | 1.45 |
+| 边缘高光 | 边缘轮廓和掠射高光强度，范围 0–1 | 0.7 |
+| 宽度 / 高度 | 圆角矩形玻璃尺寸 | 300 / 220 |
+| 圆角 | 轮廓圆角半径，最大不超过尺寸的一半 | 32 |
+
+尺寸、基础厚度、打磨宽度、背景距离和高斯模糊半径统一使用**逻辑像素**。曲率为 0 时光滑平板在正视下不产生折射位移；折射率为 1 时没有折射或微法线散射。背景距离为 0 时，弯曲的厚玻璃仍会因内部传播产生位移。毛玻璃粗糙度为 0 时恢复光滑透射。模糊和高光分别由各自参数控制，关闭效果开关完全恢复背景。
+
+## 渲染流程
+
+```text
+背景 egui context / renderer → Rgba8Unorm 离屏纹理
+                                    ↓
+                            高斯模式：水平模糊 → 垂直模糊（可跳过）
+                                    ↓
+                        WGSL 背景 + 玻璃合成 → 窗口纹理
+                                    ↓
+                     独立 egui context / renderer 绘制面板
+                                    ↓
+                              queue.present
+```
+
+`src/glass.rs` 集中保存参数、圆角命中测试与 GPU uniform；`src/renderer.rs` 管理离屏纹理、两遍模糊和合成管线；`src/glass.wgsl` 实现折射，`src/blur.wgsl` 实现高斯核；`src/scene.rs` 绘制背景与控件；`src/image_view.rs` 管理固定画布、合适/填充、缩放锚点与平移；`src/main.rs` 连接窗口、输入、DPI 与 surface 生命周期。
+
+玻璃的曲面与轮廓分开计算。矩形和圆形分别用距离场裁切与抗锯齿；凸、凹透镜的高度仅取决于物理坐标半径平方 `x²+y²`，不分别按宽高归一化，所以改变矩形长宽比不会把曲面变成方形透镜。同心圆与光轴同心时具有径向一致的变形。
+
+设基础厚度为 `t`，曲面幅度为 `A`，孔径外接半径为 `R`。凸透镜前表面为 `t + A(1-r²/R²)`，凹透镜为 `t + A r²/R²`，背面均位于 `z=0`。因此 `t` 表示最薄处厚度，曲率还会增加局部厚度；`t=0` 不意味着曲面本身消失。液态玻璃使用独立打磨宽度内的平滑圆弧轮廓形成平坦中心。高度按到实际轮廓的精确距离计算，因此直边与圆弧具有相同打磨宽度，改变圆角会同步改变打磨区域。六次幂轮廓与平坦中心平滑连接，边缘斜率有限。打磨宽度大于圆角半径时，精确距离场内侧存在最近边不唯一的等距线；此时仅用平滑距离场的解析梯度近似法线，保持精确的高度与打磨区域，避免四条对角线上的法线突变。这是局部法线近似，不改变轮廓裁切或越界采样。圆形保持径向对称，打磨宽度为 0 时是光滑平板。
+
+Shader 从前表面梯度求法线，计算空气到玻璃的第一次 `refract`，沿玻璃内部光线传播至平背面；若先离开孔径，二分求交到垂直侧壁。随后计算玻璃到空气的第二次 `refract`，投影到背面后指定距离的背景平面。基础厚度改变内部横向位移，背景距离改变出射光线在空气中的传播距离，两者独立。
+
+高斯模式使用两遍连续高斯核，相邻采样点通过双线性过滤合并；半径为 0 时跳过。毛玻璃模式不预先高斯模糊背景，而是以 16 个固定空间种子的样本扰动前、后界面微法线（类似 Beckmann 微表面坡度分布），分别计算光线透射并平均。粗糙度增加散射，玻璃厚度和背景距离影响散射投影范围；固定种子产生稳定细微颗粒，不随时间闪烁。两种模式的越界采样均为黑色；边界双线性插值和高斯核也使用黑色填充。
+
+egui 的离屏颜色保存在非 sRGB 的 `Rgba8Unorm` 中。窗口优先使用非 sRGB attachment；若只能使用 sRGB attachment，则合成 shader 先解码，随后由 attachment 编码，避免重复 gamma 转换。模糊与 egui 保持相同的 gamma 空间。
+
+这是带三维高度和两次界面折射的**屏幕空间模型**，并非完整路径追踪：背景仍是二维平面；不模拟场景遮挡、多次内部反射、环境反射或焦散。全反射或无法到达背景的光线使用暗化反射近似，不强行生成透射方向。毛玻璃是有限样本的微表面散射近似，高光也是形状提示，不能视为完整能量守恒的光学求解器。
+
+窗口空闲时不连续渲染。输入、窗口缩放和 egui 的重绘请求触发新帧。最小化或零尺寸时暂停绘制；窗口恢复和 DPI 改变后重新配置 surface / 纹理，surface 丢失时重新创建。
+
+## 验证
+
+```sh
+cargo fmt --check
+cargo check --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+
+# 需要可用 GPU；显式执行，不在无 GPU 环境中静默跳过
+cargo test --locked --test gpu --test liquid_surface -- --ignored --nocapture
+```
+
+普通测试覆盖图片解码/缩小/错误处理、圆形和圆角命中、玻璃越界与圆形尺寸规范、图片合适/填充、鼠标缩放锚点、uniform 布局及 Naga WGSL 验证。额外 GPU 曲面测试采样四个角的大打磨区域，检查法线连续和镜面对称。GPU 测试读回实际像素，覆盖径向对称性、凹凸方向、厚度传播、圆形轮廓、打磨宽度、高斯细节下降、毛玻璃散射及颗粒稳定性、折射率 1、背景边界、纹理重建、1x/2x DPI 与 sRGB。
+
+使用 RTK 的环境可以在以上命令前加 `rtk`。若 sccache 遇到沙箱权限错误，应申请相应权限，保持 wrapper 启用。
+
+## 资源
+
+- 虚拟图片来自 Blender 官方的 Sprite Fright 项目，署名 `(CC) Blender Foundation | studio.blender.org`，采用 CC BY 1.0。[官方来源与许可](https://studio.blender.org/projects/sprite-fright/pages/about/)
+- 摄影图片为 Saupra1984 拍摄的梦莲湖，采用 CC BY-SA 3.0。[文件页面](https://commons.wikimedia.org/wiki/File:Morainelake.JPG)
+- 字体为用户指定 `~/Downloads/lxgw-wenkai-v1.522/` 中的 `LXGWWenKai-Regular.ttf`，原样复制并内嵌；不再额外打包文楷 Mono，等宽数字使用 egui 内置字体，中文回退到同一份 Regular；采用 SIL OFL 1.1，见 `assets/OFL.txt`。
+- 完整资源出处、下载链接与许可见 [assets/SOURCES.md](assets/SOURCES.md)。项目代码采用 MIT，图片和字体按各自许可证分发。
