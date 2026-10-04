@@ -33,3 +33,7 @@
 ## 字体
 
 `LXGWWenKai-Regular.ttf` 和 `OFL.txt` 从用户指定的 `~/Downloads/lxgw-wenkai-v1.522/` 原样复制。中文和正文使用霞鹜文楷 Regular；数字等宽内容使用 egui 内置等宽字体，中文回退到同一份文楷 Regular。不再打包额外的文楷 Mono。字体许可为 SIL OFL 1.1，完整许可和版权声明见 `OFL.txt`。
+
+## 玻璃图案
+
+`patterns/quatrefoil-height.png` 与 `patterns/fern-height.png` 于 2026-10-04 使用 Codex 内置 imagegen 生成，分别是复古四瓣花格与冰花叶脉的艺术化灰度高度图。提示词与处理方式见 [patterns/PROMPTS.md](patterns/PROMPTS.md)。用户参考照片未作为贴图分发，也未复制其水印。橘皮、锤纹、水晶碎面由 `src/patterns.rs` 程序生成。

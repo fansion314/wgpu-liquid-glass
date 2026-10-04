@@ -4,13 +4,16 @@ struct Params {
     optics: vec4<f32>, // radius, curvature, background distance, blur radius
     appearance: vec4<f32>, // IOR, highlight, enabled, mode
     geometry: vec4<f32>, // minimum thickness, shape, polished margin width, blur mode
-    material: vec4<f32>, // roughness, reserved
+    material: vec4<f32>, // roughness, pattern layer, tile width in points, relief strength
+    pattern: vec4<f32>, // rotation in radians, reserved
     output: vec4<f32>, // target is sRGB
 }
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var blurred: texture_2d<f32>;
 @group(0) @binding(2) var filtering: sampler;
 @group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var relief: texture_2d_array<f32>;
+@group(0) @binding(5) var relief_filtering: sampler;
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -198,6 +201,25 @@ fn frosted_color(p: vec2<f32>, normal: vec3<f32>) -> vec3<f32> {
     return color / 16.0;
 }
 
+// Normals come from a coherent periodic height field, attached to the glass.
+// Rotating the texture also rotates its tangent-space normal back to screen axes.
+fn patterned_normal(p: vec2<f32>, gradient: vec2<f32>) -> vec3<f32> {
+    if params.geometry.w < 0.5 || params.material.y < 0.5 || params.material.w <= 0.0 {
+        return normalize(vec3<f32>(-gradient, 1.0));
+    }
+    let c = cos(params.pattern.x);
+    let s = sin(params.pattern.x);
+    let q = vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+    let footprint = f32(textureDimensions(relief).x) / (max(params.material.z, 1.0) * params.viewport.z);
+    let lod = max(log2(max(footprint, 1.0)), 0.0);
+    let encoded = textureSampleLevel(relief, relief_filtering,
+        q / max(params.material.z, 1.0) + vec2<f32>(0.5), i32(params.material.y), lod).rgb;
+    let n = encoded * 2.0 - vec3<f32>(1.0);
+    let slope = n.xy / max(n.z, 0.08) * params.material.w;
+    let rotated = vec2<f32>(c * slope.x + s * slope.y, -s * slope.x + c * slope.y);
+    return normalize(vec3<f32>(-gradient + rotated, 1.0));
+}
+
 fn gamma_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(c / 12.92, pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), c > vec3<f32>(0.04045));
 }
@@ -213,7 +235,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let coverage = 1.0 - smoothstep(-0.75 / params.viewport.z, 0.75 / params.viewport.z, distance);
     if params.appearance.z > 0.5 && coverage > 0.0 && point.x < params.viewport.w {
         let front = surface(p);
-        let normal = normalize(vec3<f32>(-front.gradient, 1.0));
+        let normal = patterned_normal(p, front.gradient);
         var refracted = original;
         if params.geometry.w > 0.5 && params.material.x > 0.0 {
             refracted = frosted_color(p, normal);
@@ -222,7 +244,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
         let rim = exp(-abs(distance) / 1.5);
         let fresnel = pow(1.0 - normal.z, 3.0);
-        let lighting = params.appearance.y * (rim * 0.3 + fresnel * 0.18);
+        var glint = 0.0;
+        if params.geometry.w > 0.5 && params.material.y > 0.5 {
+            // A restrained studio-light cue on the relief; background transmission
+            // carries the pattern. This is the same approximate lighting model.
+            let light = normalize(vec3<f32>(-0.35, -0.45, 1.0));
+            glint = pow(max(dot(normal, light), 0.0), 48.0) * 0.09
+                * clamp((params.appearance.x - 1.0) * 2.0, 0.0, 1.0)
+                * clamp(params.material.w, 0.0, 1.0);
+        }
+        let lighting = params.appearance.y * (rim * 0.3 + fresnel * 0.18 + glint);
         let glass_color = mix(refracted, vec3<f32>(0.90, 0.96, 1.0), clamp(lighting, 0.0, 1.0));
         color = mix(original, glass_color, coverage);
     }

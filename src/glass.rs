@@ -26,6 +26,61 @@ pub enum BlurMode {
     Frosted,
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlassPattern {
+    Frost = 0,
+    OrangePeel,
+    Hammered,
+    Crystal,
+    Quatrefoil,
+    Fern,
+}
+
+impl GlassPattern {
+    pub const ALL: [Self; 6] = [
+        Self::Frost,
+        Self::OrangePeel,
+        Self::Hammered,
+        Self::Crystal,
+        Self::Quatrefoil,
+        Self::Fern,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Frost => "细磨砂",
+            Self::OrangePeel => "橘皮纹",
+            Self::Hammered => "锤纹",
+            Self::Crystal => "水晶碎面",
+            Self::Quatrefoil => "复古花格",
+            Self::Fern => "冰花叶脉",
+        }
+    }
+
+    /// Characteristic feature width in logical pixels, independent of aperture.
+    pub fn feature_size(self) -> f32 {
+        match self {
+            Self::Frost => 8.0,
+            Self::OrangePeel => 8.0,
+            Self::Hammered => 22.0,
+            Self::Crystal => 18.0,
+            Self::Quatrefoil => 90.0,
+            Self::Fern => 140.0,
+        }
+    }
+
+    pub fn tile_units(self) -> f32 {
+        match self {
+            Self::Frost => 1.0,
+            Self::OrangePeel => 32.0,
+            Self::Hammered => 12.0,
+            Self::Crystal => 14.0,
+            Self::Quatrefoil | Self::Fern => 3.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GlassParams {
     pub mode: GlassMode,
@@ -40,6 +95,10 @@ pub struct GlassParams {
     pub blur: f32,
     pub blur_mode: BlurMode,
     pub roughness: f32,
+    pub pattern: GlassPattern,
+    pub pattern_scale: f32,
+    pub pattern_depth: f32,
+    pub pattern_rotation: f32,
     pub ior: f32,
     pub highlight: f32,
     pub enabled: bool,
@@ -60,6 +119,10 @@ impl Default for GlassParams {
             blur: 0.0,
             blur_mode: BlurMode::Gaussian,
             roughness: 0.15,
+            pattern: GlassPattern::Frost,
+            pattern_scale: 1.0,
+            pattern_depth: 1.0,
+            pattern_rotation: 0.0,
             ior: 1.45,
             highlight: 0.7,
             enabled: true,
@@ -133,7 +196,15 @@ impl GlassParams {
                     BlurMode::Frosted => 1.0,
                 },
             ],
-            material: [self.roughness, 0.0, 0.0, 0.0],
+            material: [
+                self.roughness,
+                self.pattern as u32 as f32,
+                self.pattern.feature_size()
+                    * self.pattern.tile_units()
+                    * self.pattern_scale.max(0.1),
+                self.pattern_depth,
+            ],
+            pattern: [self.pattern_rotation.to_radians(), 0.0, 0.0, 0.0],
             output: [u32::from(srgb) as f32, 0.0, 0.0, 0.0],
         }
     }
@@ -146,7 +217,7 @@ pub fn rounded_distance(point: Vec2, half: Vec2, radius: f32) -> f32 {
     q.max(Vec2::ZERO).length() + q.max_elem().min(0.0) - radius
 }
 
-/// Seven vec4s; the Rust and WGSL layout are identical without implicit padding.
+/// Eight vec4s; the Rust and WGSL layout are identical without implicit padding.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct GlassUniform {
@@ -156,6 +227,7 @@ pub struct GlassUniform {
     pub appearance: [f32; 4],
     pub geometry: [f32; 4],
     pub material: [f32; 4],
+    pub pattern: [f32; 4],
     pub output: [f32; 4],
 }
 
@@ -186,9 +258,9 @@ mod tests {
 
     #[test]
     fn uniform_matches_wgsl_vec4_layout() {
-        assert_eq!(std::mem::size_of::<GlassUniform>(), 112);
+        assert_eq!(std::mem::size_of::<GlassUniform>(), 128);
         assert_eq!(std::mem::align_of::<GlassUniform>(), 16);
-        assert_eq!(std::mem::offset_of!(GlassUniform, output), 96);
+        assert_eq!(std::mem::offset_of!(GlassUniform, output), 112);
     }
 
     #[test]

@@ -357,7 +357,7 @@ pub fn controls(
     image_error: Option<&str>,
     display: (&mut crate::image_view::ImageView, &mut UiScale),
 ) -> bool {
-    use crate::glass::{BlurMode, GlassShape};
+    use crate::glass::{BlurMode, GlassPattern, GlassShape};
     use crate::image_view::{ImageFit, canvas};
     let (view, ui_scale) = display;
     let mut open_image = false;
@@ -448,8 +448,28 @@ pub fn controls(
                     match glass.blur_mode {
                         BlurMode::Gaussian => slider(ui, "模糊半径", &mut glass.blur, 0.0..=24.0),
                         BlurMode::Frosted => {
+                            let previous = glass.pattern;
+                            egui::ComboBox::from_label("玻璃图案")
+                                .selected_text(glass.pattern.label())
+                                .show_ui(ui, |ui| {
+                                    for pattern in GlassPattern::ALL {
+                                        ui.selectable_value(&mut glass.pattern, pattern, pattern.label());
+                                    }
+                                });
+                            if previous != glass.pattern {
+                                glass.pattern_scale = 1.0;
+                                glass.pattern_depth = 1.0;
+                                glass.pattern_rotation = 0.0;
+                                glass.roughness = if glass.pattern == GlassPattern::Frost { 0.15 } else { 0.012 };
+                            }
+                            if glass.pattern != GlassPattern::Frost {
+                                slider(ui, "纹理尺度", &mut glass.pattern_scale, 0.3..=3.0);
+                                slider(ui, "纹理起伏", &mut glass.pattern_depth, 0.0..=2.5);
+                                slider(ui, "纹理旋转", &mut glass.pattern_rotation, 0.0..=180.0);
+                                ui.small("起伏形成折射纹路；尺度越大，图案越疏。");
+                            }
                             slider(ui, "表面粗糙度", &mut glass.roughness, 0.0..=0.5);
-                            ui.small("微法线散射：厚度和背景距离会影响模糊范围。");
+                            ui.small("粗糙度控制细微散射；调低可看清压花纹路。厚度和背景距离影响折射范围。");
                         }
                     }
                     slider(ui, "边缘高光", &mut glass.highlight, 0.0..=1.0);

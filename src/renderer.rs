@@ -46,6 +46,8 @@ pub struct Effects {
     size: [u32; 2],
     format: wgpu::TextureFormat,
     sampler: wgpu::Sampler,
+    normal_atlas: wgpu::TextureView,
+    pattern_sampler: wgpu::Sampler,
     glass_pipeline: wgpu::RenderPipeline,
     blur_pipeline: wgpu::RenderPipeline,
     glass_buffer: wgpu::Buffer,
@@ -55,13 +57,28 @@ pub struct Effects {
 }
 
 impl Effects {
-    pub fn new(device: &wgpu::Device, size: [u32; 2], format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: [u32; 2],
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let glass_pipeline = pipeline(device, "Glass composite", GLASS_SHADER, format);
         let blur_pipeline = pipeline(device, "Separable Gaussian blur", BLUR_SHADER, SCENE_FORMAT);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Linear clamp"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let normal_atlas = crate::patterns::texture(device, queue);
+        let pattern_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Repeating glass relief"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
         let glass_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -86,6 +103,7 @@ impl Effects {
             &blur_y.view,
             &sampler,
             &glass_buffer,
+            (&normal_atlas, &pattern_sampler),
         );
         let blur_binds = [
             blur_binding(
@@ -110,6 +128,8 @@ impl Effects {
             size,
             format,
             sampler,
+            normal_atlas,
+            pattern_sampler,
             glass_pipeline,
             blur_pipeline,
             glass_buffer,
@@ -134,6 +154,7 @@ impl Effects {
             &self.blur_y.view,
             &self.sampler,
             &self.glass_buffer,
+            (&self.normal_atlas, &self.pattern_sampler),
         );
         self.blur_binds = [
             blur_binding(
@@ -251,6 +272,7 @@ fn glass_binding(
     blurred: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
     buffer: &wgpu::Buffer,
+    pattern: (&wgpu::TextureView, &wgpu::Sampler),
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Glass inputs"),
@@ -271,6 +293,14 @@ fn glass_binding(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(pattern.0),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::Sampler(pattern.1),
             },
         ],
     })

@@ -98,7 +98,12 @@ impl State {
             .unwrap_or(config.format);
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
-        let effects = Effects::new(&device, [config.width, config.height], config.format);
+        let effects = Effects::new(
+            &device,
+            &queue,
+            [config.width, config.height],
+            config.format,
+        );
         let scene_ctx = scene::context();
         let ui_ctx = scene::context();
         ui_ctx.set_zoom_factor(scene::default_ui_scale());

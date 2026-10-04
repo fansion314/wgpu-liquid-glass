@@ -1,6 +1,6 @@
 use egui::{Pos2, Vec2};
 use hello_wgpu::{
-    glass::{BlurMode, GlassMode, GlassParams, GlassShape},
+    glass::{BlurMode, GlassMode, GlassParams, GlassPattern, GlassShape},
     renderer::{Effects, SCENE_FORMAT, Target},
 };
 
@@ -14,6 +14,10 @@ struct Harness {
 
 impl Harness {
     fn new(format: wgpu::TextureFormat) -> Self {
+        Self::sized(format, [256, 192])
+    }
+
+    fn sized(format: wgpu::TextureFormat, size: [u32; 2]) -> Self {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&Default::default()))
@@ -21,8 +25,7 @@ impl Harness {
         eprintln!("GPU pixel tests: {:?}", adapter.get_info());
         let (device, queue) =
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let size = [256, 192];
-        let effects = Effects::new(&device, size, format);
+        let effects = Effects::new(&device, &queue, size, format);
         let output = Target::new(&device, size, format, "GPU test output");
         Self {
             device,
@@ -121,6 +124,130 @@ impl Harness {
         );
         pixels
     }
+}
+
+#[test]
+#[ignore = "Requires a GPU; also writes actual-render pattern previews to outputs/pattern-preview"]
+fn gpu_patterned_glass_is_coherent_and_exports_gallery() {
+    let h = Harness::sized(SCENE_FORMAT, [768, 560]);
+    let photo = image::load_from_memory(include_bytes!("../assets/photo.jpg")).unwrap();
+    let background = image::imageops::resize(
+        &photo.to_rgba8(),
+        768,
+        560,
+        image::imageops::FilterType::Triangle,
+    );
+    let source = background.into_raw();
+    h.upload(&source);
+    let mut p = GlassParams {
+        center: Pos2::new(384.0, 280.0),
+        size: Vec2::new(680.0, 470.0),
+        blur_mode: BlurMode::Frosted,
+        roughness: 0.012,
+        distance: 75.0,
+        highlight: 0.45,
+        ..Default::default()
+    };
+    let directory = std::path::Path::new("outputs/pattern-preview");
+    std::fs::create_dir_all(directory).unwrap();
+    let mut gallery = image::RgbaImage::new(768 * 3, 560 * 2);
+    let mut rendered: Vec<Vec<u8>> = Vec::new();
+    for (index, pattern) in GlassPattern::ALL.into_iter().enumerate() {
+        p.pattern = pattern;
+        p.roughness = if pattern == GlassPattern::Frost {
+            0.15
+        } else {
+            0.012
+        };
+        let pixels = h.render(&p, 1.0, 768.0);
+        assert_eq!(
+            pixels,
+            h.render(&p, 1.0, 768.0),
+            "{pattern:?}: unstable grain"
+        );
+        assert!(
+            error(&pixels, &source) > 1.0,
+            "{pattern:?}: missing optical relief"
+        );
+        for previous in &rendered {
+            assert!(
+                error(&pixels, previous) > 0.5,
+                "{pattern:?}: indistinguishable pattern"
+            );
+        }
+        let image = image::RgbaImage::from_raw(768, 560, pixels.clone()).unwrap();
+        image
+            .save(directory.join(format!("{index}-{pattern:?}.png")))
+            .unwrap();
+        image::imageops::overlay(
+            &mut gallery,
+            &image,
+            (index % 3 * 768) as i64,
+            (index / 3 * 560) as i64,
+        );
+        rendered.push(pixels);
+        if pattern != GlassPattern::Frost {
+            let reference = rendered.last().unwrap();
+            p.pattern_rotation = 37.0;
+            assert!(
+                error(reference, &h.render(&p, 1.0, 768.0)) > 0.5,
+                "rotation must rotate relief"
+            );
+            p.pattern_rotation = 0.0;
+            p.pattern_scale = 1.7;
+            assert!(
+                error(reference, &h.render(&p, 1.0, 768.0)) > 0.5,
+                "scale must change feature spacing"
+            );
+            p.pattern_scale = 1.0;
+            let mut scaled = p.clone();
+            scaled.center = scaled.center / 2.0;
+            scaled.size /= 2.0;
+            scaled.radius /= 2.0;
+            scaled.thickness /= 2.0;
+            scaled.margin /= 2.0;
+            scaled.distance /= 2.0;
+            scaled.pattern_scale /= 2.0;
+            scaled.roughness = 0.0;
+            let mut smooth_grain = p.clone();
+            smooth_grain.roughness = 0.0;
+            // Micrograin has its own logical-space pitch, so isolate the relief.
+            assert!(
+                error(
+                    &h.render(&smooth_grain, 1.0, 768.0),
+                    &h.render(&scaled, 2.0, 384.0)
+                ) < 0.2,
+                "{pattern:?}: DPI must preserve physical relief"
+            );
+            p.pattern_depth = 0.0;
+            p.roughness = 0.0;
+            let flat_relief = h.render(&p, 1.0, 768.0);
+            p.pattern = GlassPattern::Frost;
+            assert_eq!(
+                flat_relief,
+                h.render(&p, 1.0, 768.0),
+                "zero relief must recover smooth glass"
+            );
+            p.pattern = pattern;
+            p.pattern_depth = 1.0;
+            p.curvature = 0.0;
+            p.ior = 1.0;
+            p.highlight = 0.0;
+            assert_eq!(
+                h.render(&p, 1.0, 768.0),
+                source,
+                "IOR 1 must erase optical pattern"
+            );
+            p.curvature = 0.6;
+            p.ior = 1.45;
+            p.highlight = 0.45;
+        }
+    }
+    gallery.save(directory.join("gallery.png")).unwrap();
+    eprintln!(
+        "Passed six patterns: stable relief, distinct pixels, rotation, scale, zero depth, IOR 1, DPI; gallery: {}",
+        directory.display()
+    );
 }
 
 fn params() -> GlassParams {
