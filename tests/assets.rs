@@ -1,6 +1,30 @@
 use hello_wgpu::scene;
 
 #[test]
+fn font_subset_preserves_source_glyphs_and_is_small() {
+    let original =
+        ttf_parser::Face::parse(include_bytes!("../assets/LXGWWenKai-Regular.ttf"), 0).unwrap();
+    let subset = ttf_parser::Face::parse(scene::UI_FONT, 0).unwrap();
+    assert!(scene::UI_FONT.len() < 1024 * 1024);
+    let chars = include_str!(concat!(env!("OUT_DIR"), "/font-characters.txt"));
+    for ch in chars.chars() {
+        if let Some(id) = original.glyph_index(ch) {
+            let kept = subset
+                .glyph_index(ch)
+                .unwrap_or_else(|| panic!("missing {ch}"));
+            assert_eq!(
+                original.glyph_hor_advance(id),
+                subset.glyph_hor_advance(kept)
+            );
+            assert_eq!(
+                original.glyph_bounding_box(id),
+                subset.glyph_bounding_box(kept)
+            );
+        }
+    }
+}
+
+#[test]
 fn embedded_pictures_load_at_original_resolution_before_first_frame() {
     let ctx = scene::context();
     let pictures = scene::images(&ctx, 8192).unwrap();

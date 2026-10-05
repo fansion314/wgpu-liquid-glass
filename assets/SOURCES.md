@@ -32,7 +32,7 @@
 
 ## 字体
 
-`LXGWWenKai-Regular.ttf` 和 `OFL.txt` 从用户指定的 `~/Downloads/lxgw-wenkai-v1.522/` 原样复制。中文和正文使用霞鹜文楷 Regular；数字等宽内容使用 egui 内置等宽字体，中文回退到同一份文楷 Regular。不再打包额外的文楷 Mono。字体许可为 SIL OFL 1.1，完整许可和版权声明见 `OFL.txt`。
+`LXGWWenKai-Regular.ttf` 和 `OFL.txt` 从用户指定的 `~/Downloads/lxgw-wenkai-v1.522/` 原样复制。源字体仅用作构建输入，`build.rs` 自动提取界面字符子集并嵌入程序。中文和正文使用文楷子集；数字等宽内容使用 egui 内置等宽字体，中文回退到文楷子集。额外运行时字符可通过 `font-extra.txt` 加入。字体许可为 SIL OFL 1.1，完整许可和版权声明见 `OFL.txt`。
 
 ## 玻璃图案
 

@@ -76,7 +76,8 @@ impl GlassPattern {
             Self::OrangePeel => 32.0,
             Self::Hammered => 12.0,
             Self::Crystal => 14.0,
-            Self::Quatrefoil | Self::Fern => 3.0,
+            Self::Quatrefoil => 1.0,
+            Self::Fern => 3.0,
         }
     }
 }

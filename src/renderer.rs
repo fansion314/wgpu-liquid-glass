@@ -5,6 +5,24 @@ pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const GLASS_SHADER: &str = include_str!("glass.wgsl");
 pub const BLUR_SHADER: &str = include_str!("blur.wgsl");
 
+#[repr(C)]
+#[derive(Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ImageMapping {
+    /// Image minimum and size in logical points. A zero size disables it.
+    pub rect: [f32; 4],
+    /// Canvas minimum and maximum in logical points.
+    pub clip: [f32; 4],
+}
+
+impl ImageMapping {
+    pub fn new(rect: egui::Rect, clip: egui::Rect) -> Self {
+        Self {
+            rect: [rect.min.x, rect.min.y, rect.width(), rect.height()],
+            clip: [clip.min.x, clip.min.y, clip.max.x, clip.max.y],
+        }
+    }
+}
+
 pub struct Target {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -51,6 +69,9 @@ pub struct Effects {
     glass_pipeline: wgpu::RenderPipeline,
     blur_pipeline: wgpu::RenderPipeline,
     glass_buffer: wgpu::Buffer,
+    image_buffer: wgpu::Buffer,
+    original_image: wgpu::TextureView,
+    image_texture: Option<wgpu::Texture>,
     blur_buffers: [wgpu::Buffer; 2],
     glass_bind: wgpu::BindGroup,
     blur_binds: [wgpu::BindGroup; 2],
@@ -86,6 +107,11 @@ impl Effects {
             contents: bytemuck::bytes_of(&GlassUniform::default_zero()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let image_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Original image mapping"),
+            contents: bytemuck::bytes_of(&ImageMapping::default()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let blur_buffers = std::array::from_fn(|_| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Blur parameters"),
@@ -96,14 +122,15 @@ impl Effects {
         let scene = Target::new(device, size, SCENE_FORMAT, "Background");
         let blur_x = Target::new(device, size, SCENE_FORMAT, "Horizontal blur");
         let blur_y = Target::new(device, size, SCENE_FORMAT, "Vertical blur");
+        let original_image = scene.texture.create_view(&Default::default());
         let glass_bind = glass_binding(
             device,
             &glass_pipeline,
-            &scene.view,
-            &blur_y.view,
+            (&scene.view, &blur_y.view),
             &sampler,
             &glass_buffer,
             (&normal_atlas, &pattern_sampler),
+            (&original_image, &image_buffer),
         );
         let blur_binds = [
             blur_binding(
@@ -133,6 +160,9 @@ impl Effects {
             glass_pipeline,
             blur_pipeline,
             glass_buffer,
+            image_buffer,
+            original_image,
+            image_texture: None,
             blur_buffers,
             glass_bind,
             blur_binds,
@@ -150,11 +180,11 @@ impl Effects {
         self.glass_bind = glass_binding(
             device,
             &self.glass_pipeline,
-            &self.scene.view,
-            &self.blur_y.view,
+            (&self.scene.view, &self.blur_y.view),
             &self.sampler,
             &self.glass_buffer,
             (&self.normal_atlas, &self.pattern_sampler),
+            (&self.original_image, &self.image_buffer),
         );
         self.blur_binds = [
             blur_binding(
@@ -172,6 +202,31 @@ impl Effects {
                 &self.blur_buffers[1],
             ),
         ];
+    }
+
+    /// Reuse egui's full-resolution GPU image; no second image upload/copy.
+    pub fn set_image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        mapping: ImageMapping,
+    ) {
+        queue.write_buffer(&self.image_buffer, 0, bytemuck::bytes_of(&mapping));
+        if self.image_texture.as_ref() == Some(texture) {
+            return;
+        }
+        self.image_texture = Some(texture.clone());
+        self.original_image = texture.create_view(&Default::default());
+        self.glass_bind = glass_binding(
+            device,
+            &self.glass_pipeline,
+            (&self.scene.view, &self.blur_y.view),
+            &self.sampler,
+            &self.glass_buffer,
+            (&self.normal_atlas, &self.pattern_sampler),
+            (&self.original_image, &self.image_buffer),
+        );
     }
 
     pub fn render(
@@ -268,11 +323,11 @@ fn pipeline(
 fn glass_binding(
     device: &wgpu::Device,
     pipeline: &wgpu::RenderPipeline,
-    scene: &wgpu::TextureView,
-    blurred: &wgpu::TextureView,
+    background: (&wgpu::TextureView, &wgpu::TextureView),
     sampler: &wgpu::Sampler,
     buffer: &wgpu::Buffer,
     pattern: (&wgpu::TextureView, &wgpu::Sampler),
+    image: (&wgpu::TextureView, &wgpu::Buffer),
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Glass inputs"),
@@ -280,11 +335,11 @@ fn glass_binding(
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(scene),
+                resource: wgpu::BindingResource::TextureView(background.0),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(blurred),
+                resource: wgpu::BindingResource::TextureView(background.1),
             },
             wgpu::BindGroupEntry {
                 binding: 2,
@@ -301,6 +356,14 @@ fn glass_binding(
             wgpu::BindGroupEntry {
                 binding: 5,
                 resource: wgpu::BindingResource::Sampler(pattern.1),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(image.0),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: image.1.as_entire_binding(),
             },
         ],
     })

@@ -1,13 +1,14 @@
 use crate::glass::{GlassMode, GlassParams, panel_width};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
+pub const UI_FONT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wenkai-ui.ttf"));
+
 pub fn context() -> egui::Context {
     let ctx = egui::Context::default();
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "wenkai".into(),
-        egui::FontData::from_static(include_bytes!("../assets/LXGWWenKai-Regular.ttf")).into(),
-    );
+    fonts
+        .font_data
+        .insert("wenkai".into(), egui::FontData::from_static(UI_FONT).into());
     fonts
         .families
         .entry(egui::FontFamily::Proportional)

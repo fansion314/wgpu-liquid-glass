@@ -41,3 +41,9 @@ web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasE
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
+ttf-parser = "0.25.1"
+
+[build-dependencies]
+fontcull = { version = "2.0.1", default-features = false }
+syn = "2"
+proc-macro2 = "1"

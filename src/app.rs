@@ -6,7 +6,7 @@ use winit::dpi::LogicalSize;
 use crate::{
     glass::{GlassParams, panel_width},
     image_view::{self, ImageView},
-    renderer::{Effects, SCENE_FORMAT},
+    renderer::{Effects, ImageMapping, SCENE_FORMAT},
     scene,
 };
 use anyhow::{Context, Result};
@@ -321,6 +321,22 @@ impl State {
                     .update_texture(&self.device, &self.queue, id, &delta);
             }
         }
+        let picture = &self.pictures[self.selected_picture];
+        let canvas = image_view::canvas(stage);
+        let texture = self
+            .scene_renderer
+            .texture(&picture.texture.id())
+            .and_then(|t| t.texture.as_ref())
+            .expect("selected image uploaded");
+        self.effects.set_image(
+            &self.device,
+            &self.queue,
+            texture,
+            ImageMapping::new(
+                self.image_view.image_rect(canvas, picture.dimensions),
+                canvas,
+            ),
+        );
         let mut commands = self.scene_renderer.update_buffers(
             &self.device,
             &self.queue,

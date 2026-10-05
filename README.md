@@ -27,7 +27,7 @@ rtk proxy pnpm exec vp run build
 
 构建脚本自动安装缺失的 `wasm32-unknown-unknown` target，使用 Cargo release 编译 Rust，再用与 `Cargo.lock` 完全匹配的 wasm-bindgen 生成浏览器绑定，最后由 Vite+ 打包。缺少匹配的 wasm-bindgen CLI 时安装到本项目 `target/tools/`，也可通过 `WASM_BINDGEN` 指定已有工具。脚本通过 `rustup which cargo/rustc` 调用实际工具链，保留默认 sccache wrapper，避免 rustup shim 的子进程权限问题。
 
-可直接托管的完整静态目录为 **`outputs/web/`**，包含 `index.html`、带哈希的 JS/CSS/wasm 与资源许可说明。不需要服务端程序，支持部署到任意子目录；构建只更新这个目录，保留 `outputs` 中现有桌面产物。字体、内置图片、玻璃图案和 shader 仍内嵌于 wasm，首次下载约几十 MB。
+可直接托管的完整静态目录为 **`outputs/web/`**，包含 `index.html`、带哈希的 JS/CSS/wasm 与资源许可说明。不需要服务端程序，支持部署到任意子目录；构建只更新这个目录，保留 `outputs` 中现有桌面产物。字体子集、内置图片、玻璃图案和 shader 内嵌于 wasm。
 
 本地启动任意静态服务器，例如：
 
@@ -127,6 +127,8 @@ Windows 产物位于 `target/x86_64-pc-windows-gnu/release/hello-wgpu.exe`；rel
 
 `src/glass.rs` 集中保存参数、圆角命中测试与 GPU uniform；`src/renderer.rs` 管理离屏纹理、两遍模糊和合成管线；`src/glass.wgsl` 实现折射，`src/blur.wgsl` 实现高斯核；`src/scene.rs` 绘制背景与控件；`src/image_view.rs` 管理固定画布、合适/填充、缩放锚点与平移；`src/app.rs` 连接窗口、输入、DPI 与 surface 生命周期；`src/main.rs` 是桌面入口，`src/web.rs` 是 wasm 入口。
 
+图片区域的折射采样直接复用 egui 上传的原始分辨率 GPU 纹理。Shader 将折射得到的背景位置减去图片矩形起点，再除以图片矩形尺寸得到原图 UV；映射与绘制共用 `ImageView::image_rect`，随缩放、平移、Fit/Fill 和 DPI 更新，且按固定画布裁切。图片以外的文字和形状继续采样离屏背景。模糊为 0 时使用原图双线性采样；图片上的非零高斯模糊使用 9×9 原图采样近似，标准差约为半径 / 3。此路径比两遍屏幕模糊更贵，但保留原图采样坐标；其他背景仍使用两遍模糊。透明图片按原有画布底色合成，越界背景仍为黑色。
+
 玻璃的曲面与轮廓分开计算。矩形和圆形分别用距离场裁切与抗锯齿；凸、凹透镜的高度仅取决于物理坐标半径平方 `x²+y²`，不分别按宽高归一化，所以改变矩形长宽比不会把曲面变成方形透镜。同心圆与光轴同心时具有径向一致的变形。
 
 设基础厚度为 `t`，曲面幅度为 `A`，孔径外接半径为 `R`。凸透镜前表面为 `t + A(1-r²/R²)`，凹透镜为 `t + A r²/R²`，背面均位于 `z=0`。因此 `t` 表示最薄处厚度，曲率还会增加局部厚度；`t=0` 不意味着曲面本身消失。液态玻璃使用独立打磨宽度内的平滑圆弧轮廓形成平坦中心。高度按到实际轮廓的精确距离计算，因此直边与圆弧具有相同打磨宽度，改变圆角会同步改变打磨区域。六次幂轮廓与平坦中心平滑连接，边缘斜率有限。打磨宽度大于圆角半径时，精确距离场内侧存在最近边不唯一的等距线；此时仅用平滑距离场的解析梯度近似法线，保持精确的高度与打磨区域，避免四条对角线上的法线突变。这是局部法线近似，不改变轮廓裁切或越界采样。圆形保持径向对称，打磨宽度为 0 时是光滑平板。
@@ -139,7 +141,15 @@ Shader 从前表面梯度求法线，计算空气到玻璃的第一次 `refract`
 
 切换“毛玻璃”后选择“玻璃图案”。保留原来的细磨砂，新增五种结构连续的纹路：橘皮纹用多尺度周期噪声和低频域扭曲；锤纹用不规则 Voronoi 单元形成圆滑凹坑；水晶碎面用带随机倾斜面的单元和窄沟槽；复古花格、冰花叶脉用内置 imagegen 生成的灰度高度图。固定图案的生成提示词、来源和处理说明见 [assets/patterns/PROMPTS.md](assets/patterns/PROMPTS.md)。
 
-`src/patterns.rs` 在启动时把高度场转换为 512 × 512 法线贴图，上传到线性颜色格式的六层纹理数组。法线 mipmap 在缩小后重新归一化，shader 按逻辑尺度和 DPI 选择过滤层级，减轻细纹缩小时的锯齿。shader 将纹理法线坡度叠加到宏观曲面梯度，作用于前界面折射；背面保持原有平面与可选微法线散射。这是表面法线起伏近似，纹理本身不增加传播厚度或改变孔径。图案使用玻璃局部逻辑坐标，随玻璃移动、独立于玻璃尺寸；旋转会同时旋转纹理坐标与法线方向。艺术图的对边窄条会平滑混合，以缓解生成图的重复接缝。
+`src/patterns.rs` 在启动时把高度场转换为 512 × 512 法线贴图，上传到线性颜色格式的六层纹理数组。艺术高度场先平滑，再在周期边界上做低通滤波和中心差分；mipmap 对坡度求平均再编码成法线，shader 按逻辑尺度和 DPI 选择过滤层级。结构化压花使用每像素四个固定子像素位置计算折射颜色，再求平均，减轻法线边缘的颜色跳变；微法线积分采用固定方向，避免细磨砂的随机格子相位给连续花纹添加闪烁。四次光学积分会增加 GPU 开销，也不能完全消除极小尺度、极大起伏或全反射边界的走样。
+
+Shader 将纹理法线坡度叠加到宏观曲面梯度，作用于前界面折射；背面保持原有平面与可选微法线散射。这是表面法线起伏近似，纹理本身不增加传播厚度或改变孔径。图案使用玻璃局部逻辑坐标，随玻璃移动、独立于玻璃尺寸；旋转会同时旋转纹理坐标与法线方向。复古花格从原图内部的一个花格象限重建对称单元，再周期重复，使边界和角落的小花中心严格重合，不再混合两朵错位的花。冰花叶脉仍混合对边窄条以缓解接缝。原始艺术 PNG 保留，运行时使用修正后的高度场；拼接预览见 `outputs/pattern-preview/quatrefoil-periodic.png`。
+
+## 编译时字体子集
+
+`build.rs` 使用纯 Rust 的 fontcull 自动扫描 `src/` 下 Rust 字符串和字符字面量（包括宏中的格式串），保留这些字符、可打印 ASCII 和常用 egui 符号，再生成 `OUT_DIR/wenkai-ui.ttf`。原生和 wasm 都只嵌入该子集；源字体仍作为构建输入和许可资源保留。修改 UI 文案或新增源码会触发重新提取，失败时停止构建。当前字体由 25,575,676 字节缩至约 235 KB。
+
+构建时无法预测任意用户文件名、运行时错误或输入文字，子集以外的字符使用 egui 其余字体回退，未覆盖的汉字可能显示缺字。可在 `assets/font-extra.txt` 添加需要支持的额外字符，无须修改构建脚本。构建无 Python、HarfBuzz 或目标平台字体工具依赖；字体继续使用 SIL OFL 1.1。
 
 压花预设把散射粗糙度调至 0.012，便于看到纹路；“纹理起伏”控制连贯的折射扭曲，“表面粗糙度”控制细微散射，可以分别归零。起伏过高时会出现全反射暗面；降低起伏或背景距离可以减轻。图案及法线均内嵌，不依赖工作目录或运行时联网。
 
@@ -175,5 +185,5 @@ cargo test --locked --test gpu --test liquid_surface -- --ignored --nocapture
 
 - 虚拟图片来自 Blender 官方的 Sprite Fright 项目，署名 `(CC) Blender Foundation | studio.blender.org`，采用 CC BY 1.0。[官方来源与许可](https://studio.blender.org/projects/sprite-fright/pages/about/)
 - 摄影图片为 Saupra1984 拍摄的梦莲湖，采用 CC BY-SA 3.0。[文件页面](https://commons.wikimedia.org/wiki/File:Morainelake.JPG)
-- 字体为用户指定 `~/Downloads/lxgw-wenkai-v1.522/` 中的 `LXGWWenKai-Regular.ttf`，原样复制并内嵌；不再额外打包文楷 Mono，等宽数字使用 egui 内置字体，中文回退到同一份 Regular；采用 SIL OFL 1.1，见 `assets/OFL.txt`。
+- 字体构建输入为用户指定 `~/Downloads/lxgw-wenkai-v1.522/` 中的 `LXGWWenKai-Regular.ttf`，构建时提取 UI 子集并内嵌；等宽数字使用 egui 内置字体，中文回退到文楷子集；采用 SIL OFL 1.1，见 `assets/OFL.txt`。
 - 完整资源出处、下载链接与许可见 [assets/SOURCES.md](assets/SOURCES.md)。项目代码采用 MIT，图片和字体按各自许可证分发。

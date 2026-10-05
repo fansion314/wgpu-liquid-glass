@@ -14,6 +14,9 @@ struct Params {
 @group(0) @binding(3) var<uniform> params: Params;
 @group(0) @binding(4) var relief: texture_2d_array<f32>;
 @group(0) @binding(5) var relief_filtering: sampler;
+struct ImageMapping { rect: vec4<f32>, clip: vec4<f32> }
+@group(0) @binding(6) var original_image: texture_2d<f32>;
+@group(0) @binding(7) var<uniform> image_mapping: ImageMapping;
 
 @vertex
 fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
@@ -152,11 +155,45 @@ fn black_border_sample(image: texture_2d<f32>, pixel: vec2<f32>, bounds: vec2<f3
     return mix(a, b, fraction.y);
 }
 
+fn source_color(point: vec2<f32>) -> vec3<f32> {
+    let pixel = point * params.viewport.z;
+    let bounds = vec2<f32>(params.viewport.w * params.viewport.z, params.viewport.y);
+    if any(pixel < vec2<f32>(0.0)) || any(pixel >= bounds) { return vec3<f32>(0.0); }
+    if all(image_mapping.rect.zw > vec2<f32>(0.0)) {
+        let uv = (point - image_mapping.rect.xy) / image_mapping.rect.zw;
+        if all(point >= image_mapping.clip.xy) && all(point < image_mapping.clip.zw)
+            && all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)) {
+            // Egui stores gamma-encoded premultiplied RGBA in Rgba8Unorm.
+            // Composite transparent local images over the canvas color.
+            let sample = textureSampleLevel(original_image, filtering, uv, 0.0);
+            return sample.rgb + (1.0 - sample.a) * vec3<f32>(224.0, 231.0, 226.0) / 255.0;
+        }
+    }
+    return black_border_sample(scene, pixel, bounds);
+}
+
+fn photo_blur(point: vec2<f32>) -> vec3<f32> {
+    // A 9x9 Gaussian in logical screen space, evaluating every tap against the
+    // original image mapping. This path runs only over photos with nonzero blur.
+    let step = params.optics.w / 4.0;
+    var sum = vec3<f32>(0.0);
+    var total = 0.0;
+    for (var y = -4; y <= 4; y += 1) {
+        for (var x = -4; x <= 4; x += 1) {
+            let delta = vec2<f32>(f32(x), f32(y));
+            let weight = exp(-dot(delta, delta) * 9.0 / 32.0);
+            sum += source_color(point + delta * step) * weight;
+            total += weight;
+        }
+    }
+    return sum / total;
+}
+
 fn transmission_color(p: vec2<f32>, normal: vec3<f32>, back_slope: vec2<f32>) -> vec3<f32> {
     let point = params.rect.xy + p;
     if normal.z <= 0.0001 {
         // A rough microfacet facing away from the camera has no direct beam.
-        return textureSampleLevel(scene, filtering, point * params.viewport.z / params.viewport.xy, 0.0).rgb * 0.65;
+        return source_color(point) * 0.65;
     }
     let inside_ray = refract(vec3<f32>(0.0, 0.0, -1.0), normal, 1.0 / params.appearance.x);
     let hit = exit_hit(p, surface(p).height, inside_ray);
@@ -166,16 +203,22 @@ fn transmission_color(p: vec2<f32>, normal: vec3<f32>, back_slope: vec2<f32>) ->
     if dot(outside_ray, outside_ray) <= 0.0001 || outside_ray.z >= -0.0001 {
         // TIR / ray missing the background: reflection approximation, never
         // normalize a zero refract result into a made-up transmission direction.
-        return textureSampleLevel(scene, filtering, point * params.viewport.z / params.viewport.xy, 0.0).rgb * 0.65;
+        return source_color(point) * 0.65;
     }
     let air_length = (hit.point.z + params.optics.z) / -outside_ray.z;
     let sample_position = params.rect.xy + hit.point.xy + outside_ray.xy * air_length;
     let bounds = vec2<f32>(params.viewport.w * params.viewport.z, params.viewport.y);
     let pixel = sample_position * params.viewport.z;
     if params.geometry.w < 0.5 && params.optics.w > 0.0 {
+        let uv = (sample_position - image_mapping.rect.xy) / max(image_mapping.rect.zw, vec2<f32>(0.0001));
+        if all(image_mapping.rect.zw > vec2<f32>(0.0))
+            && all(sample_position >= image_mapping.clip.xy) && all(sample_position < image_mapping.clip.zw)
+            && all(uv >= vec2<f32>(0.0)) && all(uv < vec2<f32>(1.0)) {
+            return photo_blur(sample_position);
+        }
         return black_border_sample(blurred, pixel, bounds);
     }
-    return black_border_sample(scene, pixel, bounds);
+    return source_color(sample_position);
 }
 
 fn hash(p: vec2<f32>) -> f32 {
@@ -187,8 +230,10 @@ fn frosted_color(p: vec2<f32>, normal: vec3<f32>) -> vec3<f32> {
     // The two interfaces have independent azimuths. Fixed spatial seeds give a
     // fine, stable grain instead of time-dependent noise or a uniform Gaussian.
     let cell = floor(p / 0.8); // grain is attached to the glass, not the screen
-    let angle_front = hash(cell) * 6.2831853;
-    let angle_back = hash(cell + vec2<f32>(73.0, 19.0)) * 6.2831853;
+    // Structured glass uses a fixed quadrature orientation: the random cell
+    // phases used for fine frost otherwise introduce another moving discontinuity.
+    let angle_front = select(hash(cell) * 6.2831853, 0.0, params.material.y > 0.5);
+    let angle_back = select(hash(cell + vec2<f32>(73.0, 19.0)) * 6.2831853, 1.7, params.material.y > 0.5);
     var color = vec3<f32>(0.0);
     for (var i = 0; i < 16; i += 1) {
         let u = (f32(i) + 0.5) / 16.0;
@@ -220,6 +265,24 @@ fn patterned_normal(p: vec2<f32>, gradient: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(-gradient + rotated, 1.0));
 }
 
+fn optical_color(p: vec2<f32>, normal: vec3<f32>) -> vec3<f32> {
+    if params.geometry.w > 0.5 && params.material.x > 0.0 { return frosted_color(p, normal); }
+    return transmission_color(p, normal, vec2<f32>(0.0));
+}
+
+fn patterned_color(p: vec2<f32>) -> vec3<f32> {
+    // Integrate nonlinear refraction, not just the normals. Four deterministic
+    // subpixel samples stay attached to the pixel footprint during dragging.
+    var color = vec3<f32>(0.0);
+    for (var i = 0u; i < 4u; i += 1u) {
+        let offset = (vec2<f32>(f32(i & 1u), f32(i >> 1u)) - vec2<f32>(0.5))
+            * 0.5 / params.viewport.z;
+        let q = p + offset;
+        color += optical_color(q, patterned_normal(q, surface(q).gradient));
+    }
+    return color * 0.25;
+}
+
 fn gamma_to_linear(c: vec3<f32>) -> vec3<f32> {
     return select(c / 12.92, pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4)), c > vec3<f32>(0.04045));
 }
@@ -236,11 +299,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if params.appearance.z > 0.5 && coverage > 0.0 && point.x < params.viewport.w {
         let front = surface(p);
         let normal = patterned_normal(p, front.gradient);
-        var refracted = original;
-        if params.geometry.w > 0.5 && params.material.x > 0.0 {
-            refracted = frosted_color(p, normal);
-        } else {
-            refracted = transmission_color(p, normal, vec2<f32>(0.0));
+        var refracted = optical_color(p, normal);
+        if params.geometry.w > 0.5 && params.material.y > 0.5 && params.material.w > 0.0
+            && params.appearance.x > 1.0001 {
+            refracted = patterned_color(p);
         }
         let rim = exp(-abs(distance) / 1.5);
         let fresnel = pow(1.0 - normal.z, 3.0);

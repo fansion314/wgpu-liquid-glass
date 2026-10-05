@@ -74,13 +74,36 @@ pub fn height_field(pattern: GlassPattern) -> Vec<f32> {
         let image = image::load_from_memory(bytes)
             .expect("embedded pattern must decode")
             .to_luma8();
+        let image = if pattern == GlassPattern::Quatrefoil {
+            // Reconstruct one canonical cell from an interior quadrant, rather
+            // than trusting imagegen's shifted outer rosettes. Mirror around the
+            // medallion and the gap-rosette centers; corners share ONE center.
+            image::GrayImage::from_fn(RESOLUTION, RESOLUTION, |x, y| {
+                let u = ((x as f32 + 0.5) / RESOLUTION as f32 - 0.5).abs() * 2.0;
+                let v = ((y as f32 + 0.5) / RESOLUTION as f32 - 0.5).abs() * 2.0;
+                let sx = (0.500 + u * 0.166) * (image.width() - 1) as f32;
+                let sy = (0.501 + v * 0.163) * (image.height() - 1) as f32;
+                let ix = sx.floor() as u32;
+                let iy = sy.floor() as u32;
+                let at = |dx, dy| f32::from(image.get_pixel(ix + dx, iy + dy)[0]);
+                let mix = |a: f32, b: f32, t: f32| a + (b - a) * t;
+                image::Luma([mix(
+                    mix(at(0, 0), at(1, 0), sx.fract()),
+                    mix(at(0, 1), at(1, 1), sx.fract()),
+                    sy.fract(),
+                )
+                .round() as u8])
+            })
+        } else {
+            image
+        };
         let image = image::imageops::resize(
             &image,
             RESOLUTION,
             RESOLUTION,
             image::imageops::FilterType::Triangle,
         );
-        let image = image::imageops::blur(&image, 0.8);
+        let image = image::imageops::blur(&image, 1.2);
         let mut heights: Vec<f32> = image
             .into_raw()
             .into_iter()
@@ -90,7 +113,11 @@ pub fn height_field(pattern: GlassPattern) -> Vec<f32> {
         // strips with a smooth taper before differentiating, so wrapping cannot
         // introduce a tall spurious ridge. The interior artwork is preserved.
         let n = RESOLUTION as usize;
-        let band = n / 24;
+        let band = if pattern == GlassPattern::Quatrefoil {
+            0
+        } else {
+            n / 24
+        };
         for horizontal in [true, false] {
             for line in 0..n {
                 for i in 0..band {
@@ -112,7 +139,7 @@ pub fn height_field(pattern: GlassPattern) -> Vec<f32> {
                 }
             }
         }
-        return heights;
+        return smooth_periodic(&heights, n);
     }
     let units = pattern.tile_units();
     (0..RESOLUTION)
@@ -135,6 +162,25 @@ pub fn height_field(pattern: GlassPattern) -> Vec<f32> {
             })
         })
         .collect()
+}
+
+fn smooth_periodic(heights: &[f32], n: usize) -> Vec<f32> {
+    // Binomial low-pass on the torus: filtering must wrap before differentiation.
+    let mut current = heights.to_vec();
+    for horizontal in [true, false] {
+        let mut next = vec![0.0; n * n];
+        for y in 0..n {
+            for x in 0..n {
+                for (i, weight) in [1.0, 4.0, 6.0, 4.0, 1.0].into_iter().enumerate() {
+                    let sx = if horizontal { (x + n + i - 2) % n } else { x };
+                    let sy = if horizontal { y } else { (y + n + i - 2) % n };
+                    next[y * n + x] += current[sy * n + sx] * weight / 16.0;
+                }
+            }
+        }
+        current = next;
+    }
+    current
 }
 
 pub fn normal_map(pattern: GlassPattern) -> Vec<u8> {
@@ -204,21 +250,25 @@ fn mip_chain(pattern: GlassPattern) -> Vec<u8> {
         let mut next = Vec::with_capacity(half * half * 4);
         for y in 0..half {
             for x in 0..half {
-                let mut average = [0.0_f32; 4];
+                let mut average = [0.0_f32; 3];
                 for dy in 0..2 {
                     for dx in 0..2 {
                         let offset = ((y * 2 + dy) * width + x * 2 + dx) * 4;
-                        for (channel, value) in average.iter_mut().enumerate() {
-                            *value += f32::from(current[offset + channel]) / 4.0;
-                        }
+                        let normal =
+                            [0, 1, 2].map(|c| f32::from(current[offset + c]) / 255.0 * 2.0 - 1.0);
+                        // Average slopes, not renormalized unit normals. Unit
+                        // normals underweight steep ridges during minification.
+                        average[0] += normal[0] / normal[2].max(0.08) / 4.0;
+                        average[1] += normal[1] / normal[2].max(0.08) / 4.0;
+                        average[2] += f32::from(current[offset + 3]) / 4.0;
                     }
                 }
-                let n = [average[0], average[1], average[2]].map(|v| v / 255.0 * 2.0 - 1.0);
+                let n = [average[0], average[1], 1.0];
                 let length = n.into_iter().map(|v| v * v).sum::<f32>().sqrt().max(0.001);
                 for v in n {
                     next.push(((v / length * 0.5 + 0.5) * 255.0).round() as u8);
                 }
-                next.push(average[3].round() as u8);
+                next.push(average[2].round() as u8);
             }
         }
         result.extend_from_slice(&next);
@@ -231,6 +281,26 @@ fn mip_chain(pattern: GlassPattern) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quatrefoil_corners_share_a_center_and_periodic_slopes() {
+        let h = height_field(GlassPattern::Quatrefoil);
+        let n = RESOLUTION as usize;
+        for y in 0..n {
+            for x in 0..n {
+                assert!((h[y * n + x] - h[y * n + n - 1 - x]).abs() < 0.00001);
+                assert!((h[y * n + x] - h[(n - 1 - y) * n + x]).abs() < 0.00001);
+            }
+        }
+        // Export the actual periodic height field, including a four-tile junction.
+        let dir = std::path::Path::new("outputs/pattern-preview");
+        std::fs::create_dir_all(dir).unwrap();
+        image::GrayImage::from_fn(RESOLUTION * 2, RESOLUTION * 2, |x, y| {
+            image::Luma([(h[(y as usize % n) * n + x as usize % n] * 255.0).round() as u8])
+        })
+        .save(dir.join("quatrefoil-periodic.png"))
+        .unwrap();
+    }
 
     #[test]
     fn height_sources_and_normals_have_coherent_nonflat_relief() {

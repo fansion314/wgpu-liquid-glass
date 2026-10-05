@@ -1,7 +1,7 @@
 use egui::{Pos2, Vec2};
 use hello_wgpu::{
     glass::{BlurMode, GlassMode, GlassParams, GlassPattern, GlassShape},
-    renderer::{Effects, SCENE_FORMAT, Target},
+    renderer::{Effects, ImageMapping, SCENE_FORMAT, Target},
 };
 
 struct Harness {
@@ -284,6 +284,80 @@ fn variation(pixels: &[u8]) -> f32 {
         }
     }
     result
+}
+
+#[test]
+#[ignore = "Requires a GPU"]
+fn gpu_refraction_reads_original_image_and_respects_canvas_mapping() {
+    let mut h = Harness::new(SCENE_FORMAT);
+    let screen: Vec<u8> = [128, 128, 128, 255].repeat(256 * 192);
+    h.upload(&screen);
+    let image = Target::new(&h.device, [1024, 768], SCENE_FORMAT, "4x original image");
+    let source: Vec<u8> = (0..768)
+        .flat_map(|y| {
+            (0..1024).flat_map(move |x| {
+                let value = if (x / 4 + y / 4) % 2 == 0 { 20 } else { 240 };
+                [value, value, value, 255]
+            })
+        })
+        .collect();
+    h.queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &image.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &source,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4096),
+            rows_per_image: Some(768),
+        },
+        wgpu::Extent3d {
+            width: 1024,
+            height: 768,
+            depth_or_array_layers: 1,
+        },
+    );
+    let canvas = egui::Rect::from_min_max(Pos2::new(32.0, 24.0), Pos2::new(224.0, 168.0));
+    // Offset and zoomed image, clipped independently of its UV mapping.
+    let image_rect = egui::Rect::from_min_size(Pos2::new(-16.0, -12.0), Vec2::new(256.0, 192.0));
+    h.effects.set_image(
+        &h.device,
+        &h.queue,
+        &image.texture,
+        ImageMapping::new(image_rect, canvas),
+    );
+    let mut p = params();
+    p.curvature = 0.0;
+    let pixels = h.render(&p, 1.0, 256.0);
+    assert_eq!(
+        &pixels[(96 * 256 + 128) * 4..(96 * 256 + 128) * 4 + 3],
+        &[20, 20, 20],
+        "original 4x-resolution image detail must survive the gray screen buffer"
+    );
+    let beyond_canvas = (96 * 256 + 40) * 4;
+    let clipped = egui::Rect::from_min_max(Pos2::new(64.0, 24.0), canvas.max);
+    h.effects.set_image(
+        &h.device,
+        &h.queue,
+        &image.texture,
+        ImageMapping::new(image_rect, clipped),
+    );
+    assert_eq!(
+        &h.render(&p, 1.0, 256.0)[beyond_canvas..beyond_canvas + 3],
+        &[128; 3]
+    );
+    p.blur = 4.0;
+    let blurred = h.render(&p, 1.0, 256.0);
+    let center = (96 * 256 + 128) * 4;
+    assert!(
+        (90..=170).contains(&blurred[center]),
+        "Gaussian taps must blur original image detail"
+    );
+    p.enabled = false;
+    assert!(h.render(&p, 1.0, 256.0) == screen);
 }
 
 #[test]
