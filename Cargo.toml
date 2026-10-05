@@ -5,19 +5,39 @@ edition = "2024"
 description = "Interactive screen-space glass refraction with wgpu"
 license = "MIT"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 anyhow = "1"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 egui = "0.36.2"
-egui-wgpu = "0.36.2"
-egui-winit = "0.36.2"
-env_logger = "0.11"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
 log = "0.4"
-pollster = "1.0.1"
 rfd = "0.17.2"
-wgpu = "30.0.1"
 winit = "0.30.13"
+web-time = "1.1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+egui-wgpu = "0.36.2"
+egui-winit = { path = "vendor/egui-winit", version = "0.36.2" }
+wgpu = "30.0.1"
+env_logger = "0.11"
+pollster = "1.0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+egui-wgpu = { version = "0.36.2", default-features = false, features = [
+  "fragile-send-sync-non-atomic-wasm",
+] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "webgpu"] }
+egui-winit = { path = "vendor/egui-winit", version = "0.36.2", default-features = false, features = [
+  "links",
+] }
+console_error_panic_hook = "0.1.7"
+console_log = "1.1.0"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "Window"] }
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }

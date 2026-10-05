@@ -1,6 +1,6 @@
 # 玻璃实验室 · hello-wgpu
 
-Rust 原生窗口里的二维玻璃折射演示。使用 **winit + wgpu + WGSL** 管理窗口与渲染，**egui** 绘制中文控件、文字、高分辨率图片和形状，字体采用**霞鹜文楷**。
+支持 Rust 原生窗口和浏览器 WebGPU 的二维玻璃折射演示。使用 **winit + wgpu + WGSL** 管理窗口与渲染，**egui** 绘制中文控件、文字、高分辨率图片和形状，字体采用**霞鹜文楷**。
 
 ## 启动
 
@@ -13,6 +13,47 @@ cargo run --locked
 默认窗口为 1280 × 800 个逻辑像素，默认显示真实摄影，模糊半径为 0。三张内置图片、字体和 shader 全部内嵌，程序启动后无需联网，也不依赖当前工作目录。支持 wgpu 原生桌面后端；本项目实际验收使用 macOS / Apple M3 / Metal，Windows 尚未在真实系统中验收。Linux 测试环境为远端原生 x86_64 Arch 容器。
 
 项目使用 Rust 2024。Cargo.lock 已纳入项目，主要依赖为 wgpu 30.0.1、winit 0.30.13、egui 系列 0.36.2。保留用户的 Cargo/sccache 配置，不在项目中覆盖 wrapper。
+
+## 构建 WebGPU / wasm 版
+
+安装稳定版 Rust、Node.js、pnpm 和 Vite+ 后执行：
+
+```sh
+rtk proxy pnpm install --frozen-lockfile
+rtk proxy vp run build
+# 或通过项目本地的稳定版 Vite+：
+rtk proxy pnpm exec vp run build
+```
+
+构建脚本自动安装缺失的 `wasm32-unknown-unknown` target，使用 Cargo release 编译 Rust，再用与 `Cargo.lock` 完全匹配的 wasm-bindgen 生成浏览器绑定，最后由 Vite+ 打包。缺少匹配的 wasm-bindgen CLI 时安装到本项目 `target/tools/`，也可通过 `WASM_BINDGEN` 指定已有工具。脚本通过 `rustup which cargo/rustc` 调用实际工具链，保留默认 sccache wrapper，避免 rustup shim 的子进程权限问题。
+
+可直接托管的完整静态目录为 **`outputs/web/`**，包含 `index.html`、带哈希的 JS/CSS/wasm 与资源许可说明。不需要服务端程序，支持部署到任意子目录；构建只更新这个目录，保留 `outputs` 中现有桌面产物。字体、内置图片、玻璃图案和 shader 仍内嵌于 wasm，首次下载约几十 MB。
+
+本地启动任意静态服务器，例如：
+
+```sh
+rtk proxy python3 -m http.server 8080 --bind 127.0.0.1 --directory outputs/web
+# 或 Node 内置静态服务器：
+rtk proxy node scripts/serve-web.mjs
+```
+
+打开 `http://localhost:8080/`。生产部署使用 HTTPS；WebGPU 需要安全上下文，本地 `localhost` / `127.0.0.1` HTTP 可用，普通局域网 HTTP 地址不可用。服务器需将 `.wasm` 作为 `application/wasm` 返回。
+
+wasm 依赖关闭 wgpu 和 egui-wgpu 的默认 features，仅启用 WebGPU、WGSL 和所需的 wasm 集成；入口显式只启用 `wgpu::Backends::BROWSER_WEBGPU`，**不回退到 WebGL**。浏览器没有 WebGPU、设备初始化失败或渲染报错时，页面显示具体错误。支持拖动玻璃、图片平移/缩放、界面缩放和参数面板；“打开图片…”改用浏览器文件选择器异步读取图片，不上传文件。窗口大小随浏览器 viewport 和 DPI 更新。
+
+`egui-winit 0.36.2` 的发布版未对 wasm 的 `DroppedFile` trait 切换做条件编译，项目在 `vendor/egui-winit/` 保留带 MIT/Apache 许可证的最小兼容副本；补丁说明见 [vendor/egui-winit/PATCHES.md](vendor/egui-winit/PATCHES.md)，原生文件读取实现保持不变。
+
+开发与浏览器验收：
+
+```sh
+rtk proxy vp run dev             # 先构建 Rust，再启动 Vite+ 开发服务器
+rtk proxy vp check
+rtk proxy vp run test:web        # 使用已安装的 Microsoft Edge
+# 浏览器未提供无头 WebGPU 时，可使用真实窗口：
+rtk proxy vp run test:web --headed
+```
+
+浏览器测试从静态子目录 `/web/` 加载，验证实际 `BrowserWebGpu` 后端、拖动、图片选择、resize 与高 DPI，并验证缺少 WebGPU 时在下载 wasm 前显示错误。可用 `PLAYWRIGHT_CHANNEL=chromium` 选择已安装的 Playwright Chromium。
 
 ## 在 Mac 上交叉编译 Windows / Linux
 
@@ -84,7 +125,7 @@ Windows 产物位于 `target/x86_64-pc-windows-gnu/release/hello-wgpu.exe`；rel
                               queue.present
 ```
 
-`src/glass.rs` 集中保存参数、圆角命中测试与 GPU uniform；`src/renderer.rs` 管理离屏纹理、两遍模糊和合成管线；`src/glass.wgsl` 实现折射，`src/blur.wgsl` 实现高斯核；`src/scene.rs` 绘制背景与控件；`src/image_view.rs` 管理固定画布、合适/填充、缩放锚点与平移；`src/main.rs` 连接窗口、输入、DPI 与 surface 生命周期。
+`src/glass.rs` 集中保存参数、圆角命中测试与 GPU uniform；`src/renderer.rs` 管理离屏纹理、两遍模糊和合成管线；`src/glass.wgsl` 实现折射，`src/blur.wgsl` 实现高斯核；`src/scene.rs` 绘制背景与控件；`src/image_view.rs` 管理固定画布、合适/填充、缩放锚点与平移；`src/app.rs` 连接窗口、输入、DPI 与 surface 生命周期；`src/main.rs` 是桌面入口，`src/web.rs` 是 wasm 入口。
 
 玻璃的曲面与轮廓分开计算。矩形和圆形分别用距离场裁切与抗锯齿；凸、凹透镜的高度仅取决于物理坐标半径平方 `x²+y²`，不分别按宽高归一化，所以改变矩形长宽比不会把曲面变成方形透镜。同心圆与光轴同心时具有径向一致的变形。
 

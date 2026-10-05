@@ -109,8 +109,24 @@ pub fn local_image(
     path: &std::path::Path,
 ) -> anyhow::Result<SceneImage> {
     use anyhow::Context;
-    let image = image::ImageReader::open(path)
-        .context("无法读取文件")?
+    let bytes = std::fs::read(path).context("无法读取文件")?;
+    memory_image(
+        ctx,
+        max_texture_side,
+        &bytes,
+        &path.file_name().unwrap_or_default().to_string_lossy(),
+    )
+}
+
+/// Decode a selected file from either the native filesystem or the browser.
+pub fn memory_image(
+    ctx: &egui::Context,
+    max_texture_side: usize,
+    bytes: &[u8],
+    name: &str,
+) -> anyhow::Result<SceneImage> {
+    use anyhow::Context;
+    let image = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()?
         .decode()
         .context("图片格式不支持、文件损坏或图片超过解码内存限制")?;
@@ -143,11 +159,7 @@ pub fn local_image(
     Ok(SceneImage {
         texture,
         label: "用户图片",
-        title: path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        title: name.into(),
         credit,
         source: None,
         dimensions,
